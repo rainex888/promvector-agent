@@ -1,0 +1,66 @@
+name: Agent checks and desktop builds
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked --extra test
+      - run: uv run --locked ruff check promvector_agent scripts backend-integration tests
+      - run: uv run --locked ruff format --check promvector_agent scripts backend-integration tests
+      - run: uv run --locked pytest -q
+
+  desktop:
+    if: github.event_name != 'pull_request'
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            artifact: windows-x64
+          - os: macos-15
+            artifact: macos-arm64
+          - os: ubuntu-24.04
+            artifact: linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked --extra package
+      - run: uv run --locked python scripts/build.py
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc installer/windows.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent "dist/PromVector Agent.app" dist/PromVector-Agent-macOS.zip
+      - if: runner.os == 'Linux'
+        run: |
+          "dist/PromVector Agent" --version
+          tar -czf dist/PromVector-Agent-Linux.tar.gz -C dist "PromVector Agent"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: promvector-agent-${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            dist/PromVector-Agent-Setup.exe
+            dist/PromVector Agent.exe
+            dist/PromVector-Agent-macOS.zip
+            dist/PromVector-Agent-Linux.tar.gz
